@@ -22,10 +22,21 @@ class Database():
         self.hash_password = {}
         self.stored_messages = {}
         self.conn_by_id = {}
+        self.is_conn_closed = {}
+
+    def create_new_user(self, user_id, user_password):
+        self.stored_messages[user_id] = []
+        self.hash_password[user_id] = user_password
+        self.is_conn_closed[user_id] = False
+
+    def does_id_exist(self, user_id):
+        return user_id in self.hash_password.keys()
 
     def send_stored_messages(self, user_id):
-        for message in self.stored_messages[user_by_id]:
-            self.conn_by_id[user_by_id].sendall(message.encode())
+        for message in self.stored_messages[user_id]:
+            self.conn_by_id[user_id].sendall(message.encode())
+            print(f"New stored message for {user_id}")
+        self.stored_messages[user_id] = []
 
 database = Database()
 
@@ -42,6 +53,9 @@ def turn_into_json(message):
     message = json.dumps(message)
     return message
 
+def turn_into_message(message):
+    return (turn_into_json(message)).encode()
+
 # {"from": id1, "to": id2, "type": "text"/"invite"/..., "timestamp": ..., "text": ...}
 
 def handler(conn, addr):
@@ -51,51 +65,63 @@ def handler(conn, addr):
     cur_id += 1
     cur_message = {}
     correct_authoriztion = False
-    cur_message['from'] = 0
+    cur_message['from'] = "0"
     cur_message['type'] = "authorisation"
-    cur_message['text'] = "Введите свой id и пароль на через enter, если id ещё не существует, то создастся новый аккаунт с введёнными даннми"
-    conn.sendall(turn_into_json(cur_message).encode())
+    cur_message['text'] = "Введите свой id и пароль через enter, если id ещё не существует, то создастся новый аккаунт с введёнными даннми"
+    cur_message['is_correct'] = False
+    conn.sendall(turn_into_message(cur_message))
     while not correct_authoriztion:
         data = decode_message(conn.recv(1024))
         data = get_dict(data)
         user_id, password = data['text']
         password = get_hash(password)
-        if user_id not in database.hash_password.keys() or database.hash_password[user_id] == password:
+        if user_id != "0" and (not database.does_id_exist(user_id) or database.hash_password[user_id] == password):
             correct_authoriztion = True
             cur_message['to'] = user_id
-
-            if user_id not in database.hash_password.keys():
+            database.conn_by_id[user_id] = conn
+            cur_message['is_correct'] = True
+            if not database.does_id_exist(user_id):
                 cur_message['text'] = "Новый аккаунт создан"
-                conn.sendall(turn_into_json(cur_message).encode())
+                database.create_new_user(user_id, password)
+                conn.sendall(turn_into_message(cur_message))
             else:
                 cur_message['text'] = "Корректная авторизация"
-                conn.sendall(turn_into_json(cur_message).encode())
+                conn.sendall(turn_into_message(cur_message))
         else:
             cur_message['text'] = 'Некорректный пароль'
-            conn.sendall(turn_into_json(cur_message).encode())
-    user_by_id[cur_user_id] = conn
-    print(f"ID = {cur_user_id}")
+            conn.sendall(turn_into_message(cur_message))
+    database.is_conn_closed[user_id] = False
+    database.send_stored_messages(user_id)
+    print(f"ID = {user_id}")
     while data: # while data is being sent
         data = decode_message(conn.recv(1024)) # read sent data
         if not data:
+            database.is_conn_closed[user_id] = True
             print("Connection closed")
             break
         else:
-            print(f'Evaluating "{data}"...')
             data = get_dict(data)
-            print(f'{data}')
+            print(f'Evaluating "{data}"...')
             reciever_id = data['to']
-            if False and reciever_id not in user_by_id:
-                conn.sendall("User_does_not_exist".encode())
+            if not database.does_id_exist(reciever_id):
+                cur_message['from'] = '0'
+                cur_message['type'] = "system_message"
+                cur_message['text'] = "User_does_not_exist"
+                conn.sendall(turn_into_json(cur_message).encode())
                 continue
             if False and reciever_id == cur_user_id:
 #                print("You_cant_send_mail_to_yourself")
-                conn.sendall("You_cant_send_mail_to_yourself".encode())
-                continue
-            str_res = data
+                cur_message['from'] = '0'
+                cur_message['type'] = "system_message"
+                cur_message['text'] = "You can't send messages to yourself, bitch"
+                conn.sendall(turn_into_json(cur_message).encode())
+                continue            
             data['type'] = 'user_message'
-            str_res = turn_into_json(data)
-            user_by_id[reciever_id].sendall(str_res.encode())
+            str_res = data
+            try:
+                database.conn_by_id[reciever_id].sendall(turn_into_message(data))
+            except:
+                database.stored_messages[reciever_id].append(turn_into_json(data))
 
 # ip_server = "192.168.236.1"
 ip_server = "127.0.0.1"
@@ -112,3 +138,4 @@ while True:
     print("New_user")
     client_handler = threading.Thread(target=handler, args=(conn, addr))
     client_handler.start()
+    
